@@ -1,0 +1,17 @@
+# osdp-cli
+
+Copyright 2026 SpringCard SAS, France - www.springcard.com
+
+The project is licensed under Apache-2.0, except for the third-party files identified below. The full project license is in [LICENSE](LICENSE.txt).
+
+## tiny-AES-c
+
+The AES implementation in `src/moduleOSDP/aes.c` and `src/moduleOSDP/aes.h` is derived from tiny-AES-c by kokke and contributors (https://github.com/kokke/tiny-AES-c), released under the Unlicense. See [LICENSES/Unlicense.txt](LICENSES/Unlicense.txt). These files retain their upstream licensing.
+
+- Upstream: [kokke/tiny-AES-c](https://github.com/kokke/tiny-AES-c).
+- Authors: kokke and contributors.
+- Files: `src/moduleOSDP/aes.c` and `src/moduleOSDP/aes.h`.
+- License: Unlicense; the full text is in [LICENSES/Unlicense.txt](LICENSES/Unlicense.txt).
+- Provenance: these files are derived from tiny-AES-c. The exact imported upstream revision was not recorded; no particular revision is claimed here. Compare these files with upstream before replacing or updating them.
+
+Retain these notices and both license texts when redistributing source or binaries.
