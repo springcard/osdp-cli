@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file cp_run.c
  * @brief Implementation for executing the cp command
@@ -57,7 +58,8 @@ int cp_run_single(struct cli_context *ctx)
     uint8_t addr = ctx->cp_opts.addr;
     unsigned char replyCode;
     int size;
-    int retries = ctx->glob_options.retries;
+    int retries = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
+    int found = 0;
     
     if (ctx->cp_opts.addr_all)
         addr = 0; // First address to looking for PD, the last is 126
@@ -70,11 +72,12 @@ int cp_run_single(struct cli_context *ctx)
         replyCode = 0;
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_PDID) 
+        if(size == sizeof(osdp_PDID) && replyCode == REPLY_PDID)
         {   
+            ++found;
             if(ctx->cp_opts.addr_all)
             {
-                retries = ctx->glob_options.retries;
+                retries = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
                 addr++;  // next address to process
                 if (addr == 0x7F)
                     flagContinue = false;
@@ -88,7 +91,7 @@ int cp_run_single(struct cli_context *ctx)
             {
                 if(ctx->cp_opts.addr_all)
                 {
-                    retries = ctx->glob_options.retries;
+                    retries = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
                     addr++;  // next address to process
                     if (addr == 0x7F)
                         flagContinue = false;
@@ -103,7 +106,7 @@ int cp_run_single(struct cli_context *ctx)
             {
                 if(ctx->cp_opts.addr_all)
                 {
-                    retries = ctx->glob_options.retries;
+                    retries = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
                     addr++;  // next address to process
                     if (addr == 0x7F)
                         flagContinue = false;
@@ -118,7 +121,9 @@ int cp_run_single(struct cli_context *ctx)
         
     }while(flagContinue && !stop_requested);
 
-    return 0;
+    if (stop_requested) { cli_error_code("cancelled"); return 1; }
+    if (ctx->cp_opts.addr_all && found > 0) return 0;
+    return cli_reply_result(size, replyCode, size == sizeof(osdp_PDID) && replyCode == REPLY_PDID);
 }
 
 
@@ -133,83 +138,34 @@ int cp_run_single(struct cli_context *ctx)
  * 
  * @return An integer status code indicating the success or failure of the command execution.
  */
-int cp_run_poll(struct cli_context *ctx)//, struct cp_options *opts)
+int cp_run_poll(struct cli_context *ctx)
 {
-    uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    bool flagContinue = true;
-    uint8_t addr = ctx->cp_opts.addr;
-    uint8_t replyCode;
-    int size;
-    int retries = ctx->glob_options.retries;
-
-    if (ctx->cp_opts.addr_all)
-        addr = 0; // First address to looking for PD, the last is 126
-
-    do{
-        // send the ID command to retrieve the vendor code, model number, serial number and firmware version of the device
+    uint8_t reply[MAX_SIZE_MSG_PACKET], code = 0;
+    uint8_t addr = ctx->cp_opts.addr_all ? 0 : ctx->cp_opts.addr;
+    int attempts = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
+    int remaining = attempts;
+    int received = 0;
+    while (!stop_requested) {
         Command_OSDP_POLL(0, addr);
-
-        memset(replyPacket, 0, MAX_SIZE_MSG_PACKET);
-        replyCode = 0;
-        size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
-
-        switch(replyCode)
-        {
-            case REPLY_ACK:
-            case REPLY_KEYPAD:
-            case REPLY_RAW:
-            case REPLY_ISTATR:
-            case REPLY_LSTATR:
-            case REPLY_OSTATR:
-            case REPLY_RSTATR:
-            case REPLY_BIOREADR:
-            case REPLY_BIOMATCHR:
-                if(ctx->cp_opts.addr_all)
-                {
-                    retries = ctx->glob_options.retries;                    
-                    addr++;  // next address to process
-                    if (addr == 0x7F)
-                        addr = 0;
-                }                  
-            break;
-
-            case REPLY_NAK:
-                if(--retries == 0)
-                {
-                    if(ctx->cp_opts.addr_all)
-                    {
-                        retries = ctx->glob_options.retries;
-                        addr++;  // next address to process
-                        if (addr == 0x7F)
-                            addr = 0;
-                    }                      
-                }
-            break;
-
-            default:
-                //printf("<-- receive unexpected reply code: %02x\n", replyCode);
-                if(--retries == 0)
-                {
-                    if(ctx->cp_opts.addr_all)
-                    {
-                        retries = ctx->glob_options.retries;
-                        addr++;  // next address to process
-                        if (addr == 0x7F)
-                            flagContinue = false;
-                    }         
-                    else                
-                        flagContinue = false;
-                }
-            break;
-
+        int size = getReply(0, &code, reply, sizeof(reply));
+        int valid = size >= 0 && ((code == REPLY_ACK && size == 0) ||
+            code == REPLY_KEYPAD || code == REPLY_RAW || code == REPLY_ISTATR ||
+            code == REPLY_LSTATR || code == REPLY_OSTATR || code == REPLY_RSTATR ||
+            code == REPLY_BIOREADR || code == REPLY_BIOMATCHR);
+        if (valid) {
+            ++received;
+            remaining = attempts;
+            if (ctx->cp_opts.addr_all) addr = addr == 126 ? 0 : addr + 1;
+        } else if (--remaining <= 0) {
+            if (!ctx->cp_opts.addr_all) return cli_reply_result(size, code, 0);
+            remaining = attempts;
+            addr = addr == 126 ? 0 : addr + 1;
         }
-        // Slow down the CP loop
-        if(ctx->cp_opts.delay > 0)
-            delay_ms(ctx->cp_opts.delay);
-        
-    }while(!stop_requested);    
-
-    return 0;
+        if (ctx->cp_opts.delay > 0) delay_ms(ctx->cp_opts.delay);
+    }
+    if (received > 0) return 0;
+    cli_error_code("cancelled");
+    return 1;
 }
 
 
@@ -226,12 +182,12 @@ int cp_run_poll(struct cli_context *ctx)//, struct cp_options *opts)
  */
 int cp_run(struct cli_context *ctx)
 {
-    uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
+    int status = 1;
     
     signal(SIGINT, handle_sigint);
 
     if (!serial_open(ctx->cp_opts.port, ctx->cp_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error, arguments missing(port/baudrate)\n");
+        cli_diagnostic(stdout, "Error, arguments missing(port/baudrate)\n");
         return -1;
     }
 
@@ -242,8 +198,8 @@ int cp_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }
 
@@ -255,20 +211,18 @@ int cp_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->cp_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
-    if(ctx->cp_opts.single)
-        cp_run_single(ctx);//, opts);
-    else
-        cp_run_poll(ctx);//, opts);
+    status = ctx->cp_opts.single ? cp_run_single(ctx) : cp_run_poll(ctx);
 
+cleanup:
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file sniff_run.c
  * @brief Implementation for executing the sniff command
@@ -60,27 +61,35 @@ static void handle_sigint(int sig)
 int sniff_run(struct cli_context *ctx)
 {
     uint8_t buf[100];
+    int status = 0;
+    bool worker_started = false;
 
     signal(SIGINT, handle_sigint);
 
     if (!ctx->sniff_opts.port) {
-        fprintf(stderr, "sniff: --port required\n");
+        cli_diagnostic(stderr, "sniff: --port required\n");
         return 1;
     }
 
     if (!serial_open(ctx->sniff_opts.port, ctx->sniff_opts.baud, ctx->glob_options.timeout)) {
-        fprintf(stderr, "Error opening RS485 port\n");
+        cli_diagnostic(stderr, "Error opening RS485 port\n");
         return -1;
     }
 
 	// Create the queue for incoming frames
 	inFrameQueue = tiny_queue_create();
 	if (inFrameQueue == NULL) {
-		fprintf(stderr, "Cannot allocate queue\n");
+		cli_diagnostic(stderr, "Cannot allocate queue\n");
+        serial_close();
 		return -1;
 	}
 
-    sniff_worker_start();
+    if (sniff_worker_start() != 0) {
+        cli_set_error("Failed to start capture worker");
+        status = 1;
+        goto cleanup;
+    }
+    worker_started = true;
 
     osdpPacketInit(0, SNIFFER_FRAME);  
  
@@ -89,8 +98,9 @@ int sniff_run(struct cli_context *ctx)
     if(ctx->sniff_opts.out_file != NULL)
     {
         if (sniff_logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_set_error("Failed to open log file");
+            status = 1;
+            goto cleanup;
         }
     }     
 
@@ -99,28 +109,43 @@ int sniff_run(struct cli_context *ctx)
     {
         int n = serial_read(buf, sizeof(buf));
 
+        if (n < 0) {
+            cli_set_error("Serial read failed");
+            status = 1;
+            break;
+        }
         if (n > 0) {
 
             sniff_frame_t *chunk = malloc(sizeof(sniff_frame_t));
+            if (!chunk) {
+                cli_set_error("Cannot allocate capture frame");
+                status = 1;
+                break;
+            }
             memcpy(chunk->data, buf, n);
             chunk->len = n;
 
 	        if (tiny_queue_push(inFrameQueue, chunk) != 0){
-                fprintf(stderr, "Cannot push frame to queue\n");
+                cli_set_error("Cannot push frame to queue");
+                free(chunk);
+                status = 1;
+                break;
             }
         }
     } while (!stop_requested);
 
+cleanup:
+    if (worker_started) sniff_worker_stop();
     if(ctx->sniff_opts.out_file != NULL)
         sniff_logger_file_close();  
 
     serial_close();
 
-    sniff_worker_stop();
+    /* Worker has stopped before closing its logger. */
     
     tiny_queue_destroy(inFrameQueue);
 
-    return 0;   
+    return status;
 }
 
 

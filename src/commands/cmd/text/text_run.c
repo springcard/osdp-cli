@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file text_run.c
  * @brief Implementation for executing the text subcommand
@@ -56,16 +57,17 @@ int text_run(struct cli_context *ctx)
 {
     uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
     osdp_TEXT *textParam = NULL;
-    uint8_t replyCode;
+    uint8_t replyCode = 0;
     int size = 0;
+    int status = 1;
 
     if (!ctx->text_opts.port) {
-        printf("text: --port required\n");
+        cli_diagnostic(stdout, "text: --port required\n");
         return 1;
     }
 
     if (!serial_open(ctx->text_opts.port, ctx->text_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
@@ -76,8 +78,8 @@ int text_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }
 
@@ -89,16 +91,17 @@ int text_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->text_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
     populateTextParameters(&ctx->text_opts, &textParam);
+    if (!textParam) { cli_set_error("Cannot allocate text command"); goto cleanup; }
 
     do{
         Command_OSDP_TEXT(0, (uint8_t)ctx->text_opts.addr, textParam);
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_ACK) 
+        if(size == 0 && replyCode == REPLY_ACK)
         {
             break; // command executed successfully, exit the retry loop
         }
@@ -111,14 +114,17 @@ int text_run(struct cli_context *ctx)
             ctx->glob_options.retries--; // decrement the retry count in the CLI context
         }
 
-    }while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the command if a NAK is received, and if the CLI context is still active (not exiting)
+    }while(replyCode == REPLY_NAK && ctx->glob_options.retries > 0); // retry sending the command if a NAK is received, and if the CLI context is still active (not exiting)
 
+    status = cli_reply_result(size, replyCode, (size == 0 && replyCode == REPLY_ACK));
+cleanup:
+    free(textParam);
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 
@@ -198,6 +204,7 @@ static void populateTextParameters(struct text_options *opts, osdp_TEXT **textPa
 {
     uint8_t msgLength = (uint8_t)strlen(opts->msg); // set text length based on the provided message
     *textParam = (osdp_TEXT *)malloc(sizeof(osdp_TEXT) + msgLength); // allocate memory for the osdp_TEXT structure including the text data
+    if (!*textParam) return;
     memset(*textParam, 0, sizeof(osdp_TEXT) + msgLength);
     (*textParam)->readerNber = 0;
     (*textParam)->textCommand = 0x01; // permanent text, no wrap, no clear

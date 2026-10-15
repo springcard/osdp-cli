@@ -9,6 +9,7 @@
  */
 
 #include <stdio.h>
+#include "command_result.h"
 #include <string.h>
 #include <stdlib.h>
 #include "global_options_parser.h"
@@ -56,15 +57,18 @@ int cli_parse_global_options(int argc, char **argv, struct cli_context *ctx, int
     
     memset(&ctx->glob_options, 0, sizeof(struct global_options));
     ctx->glob_options.timeout = 1000;
+    ctx->glob_options.tx_control = -1;
     ctx->glob_options.retries = 3;
     ctx->glob_options.log_format = LOG_TEXT;
 
     struct cli_option options[] = {
+        { "--tx-control", CLI_OPT_INT, &ctx->glob_options.tx_control, 0, NULL, NULL, "Optional Linux sysfs direction GPIO (active-high transmit)." },
 
         { "--quiet",      CLI_OPT_FLAG,   &ctx->glob_options.quiet,         0, NULL,              NULL, "Display the output reduced to the raw frame format." },
         { "-q",           CLI_OPT_FLAG,   &ctx->glob_options.quiet,         0, NULL,              NULL, "Display the output reduced to the raw frame format." },
         { "--verbose",    CLI_OPT_FLAG,   &ctx->glob_options.verbose,       0, NULL,              NULL, "Improves the display with the different fields of the frame and the decoded message." },
         { "-v",           CLI_OPT_FLAG,   &ctx->glob_options.verbose,       0, NULL,              NULL, "Improves the display with the different fields of the frame and the decoded message." },
+        { "--trace",      CLI_OPT_FLAG,   &ctx->glob_options.trace,         0, NULL,              NULL, "Enable console TX/RX frame traces (disabled by default)." },
         { "--json",       CLI_OPT_FLAG,   &ctx->glob_options.json,          0, NULL,              NULL, "Output machine-readable JSON (when applicable)" },
         { "--no-color",   CLI_OPT_FLAG,   &ctx->glob_options.no_color,      0, NULL,              NULL, "Disable ANSI colors" },
         { "--timeout",    CLI_OPT_INT,    &ctx->glob_options.timeout,       0, NULL,              NULL, "Timeout reply of command (ms), 1000 by default if not specified." },
@@ -96,7 +100,13 @@ int cli_parse_global_options(int argc, char **argv, struct cli_context *ctx, int
 
     *cmd_index = ret + 1; // adds 1 to align with the full command line, accounting for the first argument (the application name)
     
-    return 0;    
+    int tx_arguments = 0;
+    for (int i = 0; i < ret; ++i) if (!strcmp(argv[i], "--tx-control")) ++tx_arguments;
+    if (tx_arguments > 1 || (tx_arguments && (ctx->glob_options.tx_control < 0 || ctx->glob_options.tx_control > 65535))) {
+        cli_set_error("Invalid or duplicate --tx-control GPIO");
+        return -3;
+    }
+    return 0;
 }
 
 
@@ -118,6 +128,7 @@ void print_globale_line_options(struct cli_option *opts, int opt_count)
     printf("Global options:\n");
     printf("  %-24s %s\n", "-h, --help", "Display this help.");
     printf("  %-24s %s\n", "-u, --unattended", "Use strict JSON automation mode: place before probe, authenticate or set-key.");
+    printf("  %-24s %s\n", "--list", "Discover OSDP peripherals (alias for the list command).");
 
     for (int i = 0; i < opt_count; i++) {
         char label[64];
@@ -146,11 +157,11 @@ void print_globale_line_options(struct cli_option *opts, int opt_count)
 
     printf("\nCommon command options:\n");
     printf("  %-24s %s\n", "--port <port>", "Serial port used by commands that access RS485, e.g. COM3, COM11, or /dev/ttyUSB0.");
-    printf("  %-24s %s\n", "--baud <baud>", "Serial baud rate. Default is 9600 in commands that use a serial port.");
+    printf("  %-24s %s\n", "--baud, --baudrate <baud>", "Serial baud rate. Default is 9600 in commands that use a serial port.");
     printf("  %-24s %s\n", "--addr <int>", "OSDP PD address. Default is usually 0 when supported by the command.");
     printf("  %-24s %s\n", "--scbk <hex16>", "16-byte Secure Channel Base Key, encoded as 32 hexadecimal characters.");
     printf("  %-24s %s\n", "--scbk-d", "Use the default SCBK for secure channel establishment.");
-    printf("  %-24s %s\n", "--scsk <hex16>", "16-byte Secure Channel Session Key, encoded as 32 hexadecimal characters where supported.");
+    printf("  %-24s %s\n", "--scsk <hex16>", "Session key option reserved for compatibility; currently unsupported.");
 
     int cmdCount = cli_get_command_count();
     struct cli_command ** ptrCmd = cli_get_command_tree();  

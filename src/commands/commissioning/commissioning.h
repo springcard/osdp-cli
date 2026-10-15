@@ -13,6 +13,7 @@ struct commissioning_request {
     struct probe_options device;
     uint8_t target_key[16];
     int timeout_ms;
+    int tx_control;
 };
 struct commissioning_result {
     enum commissioning_code code;

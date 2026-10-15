@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file info_options_parser.c
  * @brief Implementation for parsing info command options
@@ -12,6 +13,7 @@
 
 #include "info_options.h"
 #include "../../cli/parser_engine.h"
+#include "../../util/utils.h"
 
 
 /**
@@ -47,7 +49,7 @@ int info_parse(int argc, char **argv, struct info_options *opts)
         { "--baud"  , CLI_OPT_STRING, &opts->baud  , 0                 , NULL           , NULL, "Baud rate to use" },
         { "--addr"  , CLI_OPT_INT   , &opts->addr  , 0                 , NULL           , NULL, "Device address for the OSDP device to query" },
         { "--scbk"  , CLI_OPT_HEX   , &opts->scbk  , sizeof(opts->scbk), &opts->scbk_set, NULL, "Decrypt Secure Channel if possible using this Base Key (16 bytes in hex)" },
-        { "--scsk"  , CLI_OPT_HEX   , &opts->scsk  , sizeof(opts->scsk), &opts->scsk_set, NULL, "Decrypt Secure Channel if possible using this Session Key (16 bytes in hex)" },
+        { "--scsk"  , CLI_OPT_HEX   , &opts->scsk  , sizeof(opts->scsk), &opts->scsk_set, NULL, "Unsupported session key option (reserved for compatibility)" },
         { "--scbk-d", CLI_OPT_FLAG  , &opts->scbk_d, 0                 , NULL           , NULL, "Use default SCBK key for secure channel establishment" }
     };
 
@@ -62,5 +64,13 @@ int info_parse(int argc, char **argv, struct info_options *opts)
         return ret;
     }
     
+    if (opts->scsk_set || (opts->scbk_set && opts->scbk_d)) {
+        cli_diagnostic(stderr, "%s\n", opts->scsk_set ? "info: --scsk unsupported" :
+                "info: --scbk and --scbk-d are mutually exclusive");
+        secure_zero(opts->scbk, sizeof(opts->scbk));
+        secure_zero(opts->scsk, sizeof(opts->scsk));
+        opts->scbk_set = opts->scsk_set = 0;
+        return -3;
+    }
     return 0;
-}  
+}

@@ -1,3 +1,4 @@
+#include "../cli/command_result.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -264,5 +265,14 @@ enum osdp_session_result osdp_open_secure_channel(uint8_t pdIndex, uint8_t addr,
 
 bool openSecureChannelSession2(uint8_t pdIndex, uint8_t addr, int retries)
 {
-    return osdp_open_secure_channel(pdIndex, addr, retries) == OSDP_SESSION_OK;
+    enum osdp_session_result result = osdp_open_secure_channel(pdIndex, addr, retries);
+    switch (result) {
+        case OSDP_SESSION_OK: return true;
+        case OSDP_SESSION_NO_RESPONSE: cli_error_code("no_response"); break;
+        case OSDP_SESSION_AUTHENTICATION_FAILED: cli_error_code("authentication_failed"); break;
+        case OSDP_SESSION_UNSUPPORTED_DEVICE: cli_error_code("unsupported_device"); break;
+        case OSDP_SESSION_ENTROPY_ERROR: cli_error_code("entropy_error"); break;
+        default: cli_error_code("communication_error"); break;
+    }
+    return false;
 }

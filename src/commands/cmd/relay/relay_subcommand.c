@@ -30,7 +30,7 @@ int relay_handler(struct cli_context *ctx, int argc, char **argv)
 
     int ret = relay_parse(argc, argv, &ctx->relay_opts);
     if (ret != 0)
-        return ret;
+        return ret == 1 ? 0 : ret;
 
     return relay_run(ctx);
     //return relay_test(ctx);

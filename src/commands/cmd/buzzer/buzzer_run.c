@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file buzzer_run.c
  * @brief Implementation for executing the buzzer subcommand
@@ -48,22 +49,23 @@
 int buzzer_run(struct cli_context *ctx)
 {
     uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    uint8_t replyCode;
+    uint8_t replyCode = 0;
     int size = 0;
+    int status = 1;
     uint8_t toneCode = 0; // Assuming a default tone code no change in tone
 
     if (!ctx->buzzer_opts.port) {
-        printf("buzzer: --port <> required\n");
+        cli_diagnostic(stdout, "buzzer: --port <> required\n");
         return 1;
     }
 
     if(ctx->buzzer_opts.buzzer_mode == BUZZER_MODE_NONE) {
-        printf("buzzer: --mode <on|off|beep|pattern> required\n");
+        cli_diagnostic(stdout, "buzzer: --mode <on|off|beep|pattern> required\n");
         return 1;
     }
 
     if (!serial_open(ctx->buzzer_opts.port, ctx->buzzer_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
@@ -74,8 +76,8 @@ int buzzer_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }
 
@@ -87,7 +89,7 @@ int buzzer_run(struct cli_context *ctx)
         setSecureChannelMode(0);
 
         if(!openSecureChannelSession2(0, ctx->buzzer_opts.addr, ctx->glob_options.retries))
-            return 1;        
+            goto cleanup;
     }
 
     //memset(&permParam,0,sizeof(perm_BUZZER_Settings));
@@ -133,7 +135,7 @@ int buzzer_run(struct cli_context *ctx)
         Command_OSDP_BUZ(0, (uint8_t)ctx->buzzer_opts.addr, 0 /* readerNumber */, toneCode, (uint8_t)ctx->buzzer_opts.onTime/100, (uint8_t)ctx->buzzer_opts.offTime/100, (uint8_t)ctx->buzzer_opts.count);
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_ACK) 
+        if(size == 0 && replyCode == REPLY_ACK)
         {
             break;
         }
@@ -146,15 +148,17 @@ int buzzer_run(struct cli_context *ctx)
             ctx->glob_options.retries--;
         }
 
-    }while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry if NAK received and retry option not zero
+    }while(replyCode == REPLY_NAK && ctx->glob_options.retries > 0); // retry if NAK received and retry option not zero
 
 
+    status = cli_reply_result(size, replyCode, (size == 0 && replyCode == REPLY_ACK));
+cleanup:
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

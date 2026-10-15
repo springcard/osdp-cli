@@ -393,7 +393,8 @@ typedef struct {
     uint8_t vendor_code2;
     uint8_t vendor_code3;
     uint8_t mfModelNumber;      /**< 1-byte Manufacturer's model number */
-	uint8_t serial_number[5];   /**< 5-byte serial number for the PD */           
+    uint8_t mfVersion;         /**< 1-byte Manufacturer's hardware version */
+    uint8_t serial_number[4];   /**< 4-byte serial number, least-significant byte first */
 	uint8_t firmwareVersion[3]; /**< 3-byte version (major, minor, build) */
 }osdp_PDID;
 

@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file sniff_options_parser.c
  * @brief Implementation for parsing sniff command options
@@ -19,6 +20,7 @@
 
 #include "sniff_options.h"
 #include "../../cli/parser_engine.h"
+#include "../../util/utils.h"
 
 
 // Reference array of log format for the sniff command  logging options, 
@@ -77,7 +79,7 @@ int sniff_parse(int argc, char **argv, struct sniff_options *opts)
         { "--port", CLI_OPT_STRING, &opts->port, 0, NULL, NULL, "Serial port to use (e.g. COM3 or /dev/ttyUSB0)" },
         { "--baud", CLI_OPT_STRING, &opts->baud, 0, NULL, NULL, "Baud rate to use" },
         { "--scbk", CLI_OPT_HEX, &opts->scbk, sizeof(opts->scbk), &opts->scbk_set, NULL, "Decrypt Secure Channel if possible using this Base Key (16 bytes in hex)" },
-        { "--scsk", CLI_OPT_HEX, &opts->scsk, sizeof(opts->scsk), &opts->scsk_set, NULL, "Decrypt Secure Channel if possible using this Session Key (16 bytes in hex)" },
+        { "--scsk", CLI_OPT_HEX, &opts->scsk, sizeof(opts->scsk), &opts->scsk_set, NULL, "Unsupported session key option (reserved for compatibility)" },
         { "--show-raw", CLI_OPT_FLAG, &opts->show_raw, 0, NULL, NULL, "Print raw frame bytes" },
         { "--show-decoded", CLI_OPT_FLAG, &opts->show_decoded, 0, NULL, NULL, "Print decoded command/reply fields (default)" },
         { "--show-errors", CLI_OPT_FLAG, &opts->show_errors, 0, NULL, NULL, "Print CRC/checksum and parsing errors" },
@@ -99,5 +101,12 @@ int sniff_parse(int argc, char **argv, struct sniff_options *opts)
         return ret;
     }
     
+    if (opts->scsk_set) {
+        cli_diagnostic(stderr, "sniff: --scsk unsupported\n");
+        secure_zero(opts->scbk, sizeof(opts->scbk));
+        secure_zero(opts->scsk, sizeof(opts->scsk));
+        opts->scbk_set = opts->scsk_set = 0;
+        return -3;
+    }
     return 0;
 }    

@@ -30,7 +30,7 @@ int put_handler(struct cli_context *ctx, int argc, char **argv)
 
     int ret = put_parse(argc, argv, &ctx->put_opts);
     if (ret != 0)
-        return ret;
+        return ret == 1 ? 0 : 1;
 
     return put_run(ctx);
     //return put_test(ctx);

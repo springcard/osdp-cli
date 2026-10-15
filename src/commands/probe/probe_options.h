@@ -8,6 +8,7 @@ struct probe_options {
     int addr;
     uint8_t key[16];
     int key_set;
+    int scbk_d;
 };
 int probe_parse(int argc, char **argv, struct probe_options *opts);
 int probe_run(struct cli_context *ctx);

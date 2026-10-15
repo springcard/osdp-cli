@@ -1,3 +1,4 @@
+#include "command_result.h"
 /**
  * @file parser_engine.c
  * @brief Implements a command-line options parser for CLI commands
@@ -24,6 +25,8 @@
 #include "parser_engine.h"
 
 static int hex_to_bytes(const char *hex, unsigned char *out, int out_len);
+static int *verbose_target;
+void cli_set_verbose_target(int *verbose) { verbose_target = verbose; }
 static int parse_enum(const char *str, const struct cli_enum *table, int *value);
 static const char *option_value_hint(const struct cli_option *opt);
 static void print_enum_values(const struct cli_enum *table);
@@ -51,6 +54,14 @@ static struct cli_option *find_option(const char *name, struct cli_option *opts,
 
         if (strcmp(name, opts[i].name) == 0)
             return &opts[i];
+    }
+
+    /* Keep one spelling internally while accepting the more explicit alias. */
+    if (strcmp(name, "--baudrate") == 0) {
+        for (int i = 0; i < count; i++) {
+            if (strcmp(opts[i].name, "--baud") == 0)
+                return &opts[i];
+        }
     }
 
     return NULL;
@@ -92,6 +103,10 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
     for (i = 0; i < argc; i++) {
 
         const char *arg = argv[i];
+        if (verbose_target && (!strcmp(arg, "--verbose") || !strcmp(arg, "-v"))) {
+            *verbose_target = 1;
+            continue;
+        }
 
         if (arg[0] != '-') // First command encountered
             return i;
@@ -107,7 +122,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
         struct cli_option *opt = find_option(arg, opts, opt_count);
 
         if (!opt) {
-            fprintf(stderr, "Unknown option\n");
+            cli_diagnostic(stderr, "Unknown option\n");
             return -3;
         }
 
@@ -121,7 +136,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
             case CLI_OPT_INT:
 
                 if (i + 1 >= argc) {
-                    fprintf(stderr, "Missing value for %s\n", arg);
+                    cli_diagnostic(stderr, "Missing value for %s\n", arg);
                     return -3;
                 }
 
@@ -130,7 +145,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
                 errno = 0;
                 long parsed = strtol(integer, &end, 10);
                 if (errno || integer == end || *end || parsed < INT_MIN || parsed > INT_MAX) {
-                    fprintf(stderr, "Invalid integer for %s\n", arg);
+                    cli_diagnostic(stderr, "Invalid integer for %s\n", arg);
                     return -3;
                 }
                 *(int *)opt->value = (int)parsed;
@@ -142,7 +157,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
             case CLI_OPT_STRING:
 
                 if (i + 1 >= argc) {
-                    fprintf(stderr, "Missing value for %s\n", arg);
+                    cli_diagnostic(stderr, "Missing value for %s\n", arg);
                     return -3;
                 }
 
@@ -152,7 +167,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
             case CLI_OPT_HEX:
             
                 if (i + 1 >= argc) {
-                    fprintf(stderr, "Missing value for %s\n", arg);
+                    cli_diagnostic(stderr, "Missing value for %s\n", arg);
                     return -3;
                 }
 
@@ -162,7 +177,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
                 {
                     if (hex_to_bytes(hex, (unsigned char *)opt->value, opt->size) != 0) {
 
-                        fprintf(stderr, "Invalid hex value for %s (expected %d bytes)\n", arg, opt->size);
+                        cli_diagnostic(stderr, "Invalid hex value for %s (expected %d bytes)\n", arg, opt->size);
 
                         return -3;
                     }
@@ -179,14 +194,14 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
                     unsigned char *hex_value = (unsigned char *)malloc(hex_len); // Buffer to store the parsed hex value
 
                     if(!hex_value) {
-                        fprintf(stderr, "Memory allocation failed for hex value of option %s\n", arg);
+                        cli_diagnostic(stderr, "Memory allocation failed for hex value of option %s\n", arg);
                         return -3;
                     }
 
                     // Convert the hex string to bytes and store it in the provided value pointer
                     if (hex_to_bytes(hex, hex_value, hex_len ) != 0) {
 
-                        fprintf(stderr, "Invalid hex value for option %s (expected %d bytes)\n", arg, opt->size);
+                        cli_diagnostic(stderr, "Invalid hex value for option %s (expected %d bytes)\n", arg, opt->size);
                         return -3;
                     }
 
@@ -199,7 +214,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
             case CLI_OPT_ENUM:
 
                 if (i + 1 >= argc) {
-                    fprintf(stderr, "Missing value for %s\n", arg);
+                    cli_diagnostic(stderr, "Missing value for %s\n", arg);
                     return -3;
                 }
 
@@ -207,7 +222,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
 
                 if (parse_enum(val, opt->enum_values, (int *)opt->value) != 0) {
 
-                    fprintf(stderr, "Invalid value for %s\n", arg);
+                    cli_diagnostic(stderr, "Invalid value for %s\n", arg);
                     return -3;
                 }
 
@@ -216,7 +231,7 @@ int parse_command_line_options(int argc, char **argv, struct cli_option *opts, i
                 break;
 
             default:
-                fprintf(stderr, "Unknown option type for %s\n", arg);
+                cli_diagnostic(stderr, "Unknown option type for %s\n", arg);
                 return -3;                
         }
     }
@@ -241,10 +256,13 @@ void print_command_line_options(struct cli_option *opts, int opt_count)
 
     for (int i = 0; i < opt_count; i++) {
         char label[64];
-        snprintf(label, sizeof(label), "%s%s%s",
-                 opts[i].name,
-                 option_value_hint(&opts[i])[0] != '\0' ? " " : "",
-                 option_value_hint(&opts[i]));
+        if (strcmp(opts[i].name, "--baud") == 0)
+            snprintf(label, sizeof(label), "--baud, --baudrate %s", option_value_hint(&opts[i]));
+        else
+            snprintf(label, sizeof(label), "%s%s%s",
+                     opts[i].name,
+                     option_value_hint(&opts[i])[0] != '\0' ? " " : "",
+                     option_value_hint(&opts[i]));
 
         printf("  %-24s", label);
 

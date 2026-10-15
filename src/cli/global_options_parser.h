@@ -20,6 +20,9 @@
 #include "../commands/cp/cp_options.h"
 #include "../commands/file/put/put_options.h"
 #include "../commands/info/info_options.h"
+#include "../commands/istat/istat.h"
+#include "../commands/output/output.h"
+#include "../commands/list/list_options.h"
 #include "../commands/probe/probe_options.h"
 #include "../commands/sckmgmt/sckmgmt_options.h"
 #include "../commands/sniff/sniff_options.h"
@@ -41,8 +44,10 @@ enum log_formats
 // This structure allows the CLI application to maintain a centralized context that can be accessed by different parts of the application as needed.
 struct global_options
 {
+    int tx_control;
     int version;    // 
     int verbose;    // Increase verbosity (repeatable)
+    int trace;      // Explicitly enable console transmission traces
     int quiet;      // Reduce output
 
     int json;       // Output machine-readable JSON (when applicable)
@@ -75,6 +80,9 @@ struct cli_context
          struct cp_options cp_opts;    
          struct put_options put_opts;
          struct info_options info_opts;
+         struct istat_options istat_opts;
+         struct output_options output_opts;
+         struct list_options list_opts;
          struct probe_options probe_opts;
          struct sckmgmt_options sckmgmt_opts;
          struct sniff_options sniff_opts;

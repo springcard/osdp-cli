@@ -55,6 +55,8 @@ struct cli_option
 
 // Function for command-line option parsing
 int parse_command_line_options(int argc, char **argv, struct cli_option *opts, int opt_count);
+/* Let command parsers recognize global verbosity without duplicating options. */
+void cli_set_verbose_target(int *verbose);
 
 // Function for command-line option printing (for help messages)
 void print_command_line_options( struct cli_option *opts, int opt_count);

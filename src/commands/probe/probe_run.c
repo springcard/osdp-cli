@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 #include <stdio.h>
 #include <string.h>
 #include "probe_result.h"
@@ -8,6 +9,7 @@
 #include "../../moduleOSDP/osdp_packet.h"
 #include "../../moduleOSDP/osdp_sc.h"
 #include "../../util/utils.h"
+#include "../../logger/logger.h"
 
 const char *probe_status_name(enum probe_status status)
 {
@@ -43,7 +45,9 @@ enum probe_status probe_read_information(struct probe_options *opts, int attempt
                 status = PROBE_COMMUNICATION_ERROR;
                 break;
             }
+            result->responded = true;
             if (code == REPLY_NAK && size == sizeof(osdp_NAK)) {
+                if (stage == 0) result->identification_refused = true;
                 status = reply[0] == 3 ? PROBE_UNSUPPORTED_DEVICE : PROBE_COMMUNICATION_ERROR;
                 break;
             }
@@ -76,7 +80,7 @@ void probe_device(struct probe_options *opts, int timeout, int attempts, struct 
     memset(result, 0, sizeof(*result));
     result->status = PROBE_INVALID_ARGUMENT;
     if (!opts->port || !opts->baud || opts->addr < 0 || opts->addr > 126 ||
-        timeout <= 0 || attempts < 0) goto cleanup;
+        timeout <= 0 || attempts < 0 || (opts->key_set && opts->scbk_d)) goto cleanup;
     if (attempts == 0) attempts = 1;
     clearSecureChannelKeys();
     osdpPacketInit(0, CONTROL_PANEL);
@@ -87,9 +91,9 @@ void probe_device(struct probe_options *opts, int timeout, int attempts, struct 
     }
     opened = true;
     result->status = probe_read_information(opts, attempts, result);
-    if (!opts->key_set) goto cleanup;
+    if (!opts->key_set && !opts->scbk_d) goto cleanup;
     /* Some devices refuse plain ID/CAP; authentication may still allow them. */
-    setNewScbk(opts->key);
+    if (opts->key_set) setNewScbk(opts->key);
     osdpPacketInit(0, CONTROL_PANEL);
     enum osdp_session_result session = osdp_open_secure_channel(0, opts->addr, attempts);
     switch (session) {
@@ -115,6 +119,7 @@ cleanup:
     clearSecureChannelKeys();
     secure_zero(opts->key, sizeof(opts->key));
     opts->key_set = 0;
+    opts->scbk_d = 0;
 }
 
 int probe_run(struct cli_context *ctx)
@@ -123,9 +128,10 @@ int probe_run(struct cli_context *ctx)
     if (ctx->glob_options.json) {
         secure_zero(ctx->probe_opts.key, sizeof(ctx->probe_opts.key));
         ctx->probe_opts.key_set = 0;
-        fprintf(stderr, "probe: use --unattended (or -u) for commissioning JSON\n");
+        cli_diagnostic(stderr, "probe: use --unattended (or -u) for commissioning JSON\n");
         return 1;
     }
+    logger_console_init(ctx);
     probe_device(&ctx->probe_opts, ctx->glob_options.timeout, ctx->glob_options.retries, &result);
     printf("probe: %s; identification=%s; capabilities=%s; authenticated=%s\n",
            probe_status_name(result.status), result.has_id ? "yes" : "no",
@@ -141,6 +147,7 @@ int probe_run(struct cli_context *ctx)
                    result.capabilities[i + 1], result.capabilities[i + 2]);
     }
     int status = result.status == PROBE_OK ? 0 : 1;
+    if (status) cli_error_code(probe_status_name(result.status));
     secure_zero(&result, sizeof(result));
     return status;
 }

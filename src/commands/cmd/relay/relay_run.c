@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file relay_run.c
  * @brief Implementation for executing the relay subcommand
@@ -52,7 +53,7 @@ static void populateRelayParameters(struct relay_options *opts, uint8_t *ctrlCod
 int relay_run(struct cli_context *ctx)
 {
     uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    uint8_t replyCode;
+    uint8_t replyCode = 0;
 
     uint8_t ctrlCode = 0;
     uint8_t lsbTimer = 0;
@@ -60,25 +61,26 @@ int relay_run(struct cli_context *ctx)
     int durationSec = 0;
 
     int size = 0;
+    int status = 1;
 
     if (!ctx->relay_opts.port) {
-        printf("relay: --port required\n");
+        cli_diagnostic(stdout, "relay: --port required\n");
         return 1;
     }
 
     if(ctx->relay_opts.output_number == -1) {
-        printf("relay: --output <n> required\n");
+        cli_diagnostic(stdout, "relay: --output <n> required\n");
         return 1;
     }
 
     if(ctx->relay_opts.relay_mode == RELAY_MODE_NONE) {
         //printf("relay: --mode <on|off|pulse> required\n");
-        printf("relay: --mode <on|off> required\n");
+        cli_diagnostic(stdout, "relay: --mode <on|off> required\n");
         return 1;
     }
 
     if (!serial_open(ctx->relay_opts.port, ctx->relay_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
@@ -89,8 +91,8 @@ int relay_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }
 
@@ -102,7 +104,7 @@ int relay_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->relay_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
     populateRelayParameters(&ctx->relay_opts, &ctrlCode, &lsbTimer, &msbTimer);
@@ -111,7 +113,7 @@ int relay_run(struct cli_context *ctx)
         Command_OSDP_OUT(0, (uint8_t)ctx->relay_opts.addr, (uint8_t)ctx->relay_opts.output_number, ctrlCode, lsbTimer, msbTimer);
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_ACK) 
+        if(size == 0 && replyCode == REPLY_ACK)
         {
             break; // exit the loop if ACK is received
         }
@@ -124,14 +126,16 @@ int relay_run(struct cli_context *ctx)
             ctx->glob_options.retries--;
         }
 
-    } while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the command until retries are exhausted or an ACK is received
+    } while(replyCode == REPLY_NAK && ctx->glob_options.retries > 0); // retry sending the command until retries are exhausted or an ACK is received
  
+    status = cli_reply_result(size, replyCode, (size == 0 && replyCode == REPLY_ACK));
+cleanup:
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
         
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

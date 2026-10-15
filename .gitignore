@@ -104,6 +104,7 @@ packages
 
 # Build directory
 build/
+build-msvc/
 
 # Executables
 *.exe

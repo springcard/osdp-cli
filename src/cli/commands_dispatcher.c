@@ -1,3 +1,4 @@
+#include "command_result.h"
 /**
  * @file commands_dispatcher.c
  * @brief Implements the CLI command dispatcher
@@ -12,6 +13,7 @@
 
 #include "commands_registry.h"
 #include "commands_dispatcher.h"
+#include "global_options_parser.h"
 
 static int is_help_arg(const char *arg)
 {
@@ -53,9 +55,13 @@ static void print_subcommand_help(const struct cli_command *cmd)
  */
 int cli_dispatch_command( struct cli_context *ctx, struct cli_command **commands, int command_count, int argc, char **argv)
 {
+    while (argc > 0 && (!strcmp(argv[0], "--verbose") || !strcmp(argv[0], "-v"))) {
+        ctx->glob_options.verbose = 1;
+        --argc; ++argv;
+    }
 
     if (argc == 0) {
-        fprintf(stderr, "Missing command. Type `osdp-cli --help` for more information.\n");
+        cli_diagnostic(stderr, "Missing command. Type `osdp-cli --help` for more information.\n");
         return 1;
     }
 
@@ -70,13 +76,19 @@ int cli_dispatch_command( struct cli_context *ctx, struct cli_command **commands
 
         // if the command has subcommands, continue dispatching the subcommand
         if (cmd->subcommands && cmd->subcommands_count > 0) {
+            int child_argc = argc - 1;
+            char **child_argv = argv + 1;
+            while (child_argc > 0 && (!strcmp(child_argv[0], "--verbose") || !strcmp(child_argv[0], "-v"))) {
+                ctx->glob_options.verbose = 1;
+                --child_argc; ++child_argv;
+            }
 
-            if (argc == 1 || is_help_arg(argv[1])) {
-                if (argc > 1) {
+            if (child_argc == 0 || is_help_arg(child_argv[0])) {
+                if (child_argc > 0) {
                     print_subcommand_help(cmd);
                     return 0;
                 }
-                fprintf(stderr, "Missing subcommand for '%s'\n", cmd->name);
+                cli_diagnostic(stderr, "Missing subcommand for '%s'\n", cmd->name);
                 fprintf(stderr, "Type `osdp-cli %s --help` for the list of subcommands.\n", cmd->name);
                 return 1;
             }
@@ -85,18 +97,20 @@ int cli_dispatch_command( struct cli_context *ctx, struct cli_command **commands
                     ctx,
                     cmd->subcommands,
                     cmd->subcommands_count,
-                    argc - 1,
-                    &argv[1]);
+                    child_argc,
+                    child_argv);
         }
 
         /* Handler final */
-        if (cmd->handler)
+        if (cmd->handler) {
+            cli_set_error("Invalid or missing command options");
             return cmd->handler(ctx, argc - 1, &argv[1]);
+        }
 
-        fprintf(stderr, "Invalid command configuration\n");
+        cli_diagnostic(stderr, "Invalid command configuration\n");
         return 1;
     }
 
-    fprintf(stderr, "Unknown command: %s\n", name);
+    cli_diagnostic(stderr, "Unknown command: %s\n", name);
     return 1;
 }

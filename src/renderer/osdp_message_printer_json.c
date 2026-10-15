@@ -431,10 +431,11 @@ static void print_json_osdp_NAK(FILE *out, const osdp_reply *nak)
 void print_json_osdp_PDID(FILE *out, const osdp_reply *pdid)
 {
     fprintf(out, "\t\"Data\" : {\n");
-    fprintf(out, "\t\t\"Vendor Code\" : %02X%02X%02X,\n", pdid->pdid.vendor_code1, pdid->pdid.vendor_code2, pdid->pdid.vendor_code3);
+    fprintf(out, "\t\t\"Vendor Code\" : \"%02X%02X%02X\",\n", pdid->pdid.vendor_code3, pdid->pdid.vendor_code2, pdid->pdid.vendor_code1);
     fprintf(out, "\t\t\"Model Number\" : %02X,\n", pdid->pdid.mfModelNumber);
-    fprintf(out, "\t\t\"Serial Number\" : %02X%02X%02X%02X%02X,\n", 
-        pdid->pdid.serial_number[4], pdid->pdid.serial_number[3], pdid->pdid.serial_number[2], 
+    fprintf(out, "\t\t\"Hardware Version\" : %u,\n", pdid->pdid.mfVersion);
+    fprintf(out, "\t\t\"Serial Number\" : \"%02X%02X%02X%02X\",\n",
+        pdid->pdid.serial_number[3], pdid->pdid.serial_number[2],
         pdid->pdid.serial_number[1], pdid->pdid.serial_number[0]);
     fprintf(out, "\t\t\"Firmware Version\" : %d.%d.%d\n", pdid->pdid.firmwareVersion[0], pdid->pdid.firmwareVersion[1], pdid->pdid.firmwareVersion[2]);
     fprintf(out, "\t}\n");

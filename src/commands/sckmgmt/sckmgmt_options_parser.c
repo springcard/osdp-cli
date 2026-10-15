@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file sckmgmt_options_parser.c
  * @brief Implementation for parsing sckmgmt command options
@@ -49,7 +50,7 @@ int sckmgmt_parse(int argc, char **argv, struct sckmgmt_options *opts)
         { "--addr", CLI_OPT_INT, &opts->addr, 0, NULL, NULL, "Device address for the OSDP device to query" },
         { "--scbk", CLI_OPT_HEX, &opts->scbk, sizeof(opts->scbk), &opts->scbk_set, NULL, "Decrypt Secure Channel if possible using this Base Key (16 bytes in hex)" },
         { "--scbk-d", CLI_OPT_FLAG  , &opts->scbk_d, 0                 , NULL           , NULL, "Use default SCBK key for secure channel establishment" },
-        { "--scsk", CLI_OPT_HEX, &opts->scsk, sizeof(opts->scsk), &opts->scsk_set, NULL, "Decrypt Secure Channel if possible using this Session Key (16 bytes in hex)" },
+        { "--scsk", CLI_OPT_HEX, &opts->scsk, sizeof(opts->scsk), &opts->scsk_set, NULL, "Unsupported session key option (reserved for compatibility)" },
         { "--set-key", CLI_OPT_HEX, &opts->new_scbk, sizeof(opts->new_scbk), &opts->new_scbk_set, NULL, "New SCBK to update the device with (16 bytes in hex)" },
         { "--verify", CLI_OPT_FLAG, &opts->verify, 0, NULL, NULL, "Compatibility flag: the new SCBK is always verified after update" }
     };
@@ -69,7 +70,7 @@ int sckmgmt_parse(int argc, char **argv, struct sckmgmt_options *opts)
     }
     
     if (ret != argc || !opts->new_scbk_set) {
-        fprintf(stderr, "sckmgmt: --set-key required; unexpected positional arguments are rejected\n");
+        cli_diagnostic(stderr, "sckmgmt: --set-key required; unexpected positional arguments are rejected\n");
         sckmgmt_clear_options(opts);
         return -3;
     }

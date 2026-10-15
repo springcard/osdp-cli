@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file raw_run.c
  * @brief Implementation for executing the raw subcommand
@@ -44,26 +45,27 @@
 int raw_run(struct cli_context *ctx)
 {
     uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    uint8_t replyCode;
+    uint8_t replyCode = 0;
     int size = 0;
+    int status = 1;
 
     if (!ctx->raw_opts.port) {
-        printf("raw: --port required\n");
+        cli_diagnostic(stdout, "raw: --port required\n");
         return 1;
     }
 
     if(!ctx->raw_opts.cmd) {
-            printf("raw: --cmd <hex string> required\n");
+            cli_diagnostic(stdout, "raw: --cmd <hex string> required\n");
             return 1;
     }
 
     if(!ctx->raw_opts.data) {
-        printf("raw: --data <hex string> required\n");
+        cli_diagnostic(stdout, "raw: --data <hex string> required\n");
         return 1;
     }
 
     if (!serial_open(ctx->raw_opts.port, ctx->raw_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
@@ -74,8 +76,8 @@ int raw_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }
 
@@ -87,7 +89,7 @@ int raw_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->raw_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
     do{
@@ -95,7 +97,7 @@ int raw_run(struct cli_context *ctx)
 
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_ACK) 
+        if(size == 0 && replyCode == REPLY_ACK)
         {
             break;
         }
@@ -103,7 +105,7 @@ int raw_run(struct cli_context *ctx)
         {
             ctx->glob_options.retries--;
         }
-        else if(replyCode == REPLY_MFGREP)
+        else if(size >= 0 && replyCode == REPLY_MFGREP)
         {
             break;
         }
@@ -112,14 +114,16 @@ int raw_run(struct cli_context *ctx)
             ctx->glob_options.retries--;
         }
         
-    }while(replyCode == REPLY_NAK && ctx->glob_options.retries);
+    }while(replyCode == REPLY_NAK && ctx->glob_options.retries > 0);
 
+    status = cli_reply_result(size, replyCode, (size == 0 && replyCode == REPLY_ACK) || replyCode == REPLY_MFGREP);
+cleanup:
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file led_run.c
  * @brief Implementation for executing the led subcommand
@@ -54,31 +55,32 @@ static void populateLedParameters(struct led_options *opts, tmp_LED_Settings *tm
 int led_run(struct cli_context *ctx)
 {
     uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    uint8_t replyCode;
+    uint8_t replyCode = 0;
     int size = 0;
+    int status = 1;
 
     if (!ctx->led_opts.port) {
-        printf("led: --port required\n");
+        cli_diagnostic(stdout, "led: --port required\n");
         return 1;
     }
 
     if (!ctx->led_opts.baud) {
-        printf("led: --baud required\n");
+        cli_diagnostic(stdout, "led: --baud required\n");
         return 1;
     }
 
     if (ctx->led_opts.addr == -1) {
-        printf("led: --addr required\n");
+        cli_diagnostic(stdout, "led: --addr required\n");
         return 1;
     }
 
     if(ctx->led_opts.led_number == -1) {
-        printf("led: --led <n> required\n");
+        cli_diagnostic(stdout, "led: --led <n> required\n");
         return 1;
     }
 
     if (!serial_open(ctx->led_opts.port, ctx->led_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
@@ -89,8 +91,8 @@ int led_run(struct cli_context *ctx)
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }    
 
@@ -102,7 +104,7 @@ int led_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->led_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
     tmp_LED_Settings tmpParam = {0};
@@ -115,7 +117,7 @@ int led_run(struct cli_context *ctx)
 
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_ACK) 
+        if(size == 0 && replyCode == REPLY_ACK)
         {
             break;
         }
@@ -127,14 +129,16 @@ int led_run(struct cli_context *ctx)
         {
             ctx->glob_options.retries--;
         }
-    }while(replyCode == REPLY_NAK && ctx->glob_options.retries); // Retry if NAK is received and retry option is not zero
+    }while(replyCode == REPLY_NAK && ctx->glob_options.retries > 0); // Retry if NAK is received and retry option is not zero
 
+    status = cli_reply_result(size, replyCode, (size == 0 && replyCode == REPLY_ACK));
+cleanup:
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

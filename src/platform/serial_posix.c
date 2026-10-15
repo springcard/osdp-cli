@@ -1,4 +1,5 @@
 #include "serial.h"
+#include "serial_tx_control.h"
 #include "../core/commissioning_control.h"
 #include <stdio.h>
 #include <fcntl.h>
@@ -39,8 +40,9 @@ static const struct baud_map baud_table[] = {
 
 
 static int fd = -1;
+static int read_timeout_ms = 100;
 static bool exclusive;
-static bool diagnostics_enabled = true;
+static bool diagnostics_enabled = false;
 void serial_set_diagnostics(bool enabled) { diagnostics_enabled = enabled; }
 
 
@@ -123,6 +125,9 @@ static bool configure_serial_port(const char *pszBaudRate, int32_t timeout) {
     // Disable input processing
     tty.c_iflag &= ~(IXON | IXOFF | IXANY); // No software flow control
     tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL);
+    /* Disabling the transceiver's local receiver can leave RXD low during TX.
+     * Ignore its break indication rather than inserting a spurious NUL byte. */
+    if (serial_tx_control_enabled()) tty.c_iflag |= IGNBRK;
 
     // Disable output processing
     tty.c_oflag &= ~OPOST;
@@ -157,6 +162,7 @@ static bool configure_serial_port(const char *pszBaudRate, int32_t timeout) {
  * @return It returns `true` if the serial port was opened successfully, and `false` otherwise.
  */
 bool serial_open(const char *port, const char *pszBaudRate, int32_t timeout) {
+    read_timeout_ms = timeout > 0 ? timeout : 100;
     // Open the serial port
     fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
     if (fd == -1) {
@@ -179,6 +185,12 @@ bool serial_open(const char *port, const char *pszBaudRate, int32_t timeout) {
         return false;
     }
 
+    if (!serial_tx_control_open()) {
+        serial_close();
+        if (diagnostics_enabled) fprintf(stderr, "RS485 direction GPIO unavailable\n");
+        return false;
+    }
+
     if (diagnostics_enabled) fprintf(stderr, "Serial port opened\n");
     return true;
 }
@@ -190,6 +202,7 @@ bool serial_open(const char *port, const char *pszBaudRate, int32_t timeout) {
  * The function `serial_close` closes the serial port and sets the file descriptor to -1.
  */
 void serial_close(void) {
+    serial_tx_control_close();
     if (fd != -1) {
         if (exclusive) { ioctl(fd, TIOCNXCL); exclusive = false; }
         close(fd);
@@ -212,8 +225,12 @@ void serial_close(void) {
  */
 int serial_read(void *buffer, size_t size) {
     if (commissioning_active()) {
+        int started_remaining = commissioning_remaining_ms();
         while (commissioning_remaining_ms() > 0) {
             int remaining = commissioning_remaining_ms();
+            int reply_remaining = read_timeout_ms - (started_remaining - remaining);
+            if (reply_remaining <= 0) break;
+            if (remaining > reply_remaining) remaining = reply_remaining;
             struct pollfd poll_fd = {fd, POLLIN, 0};
             int ready = poll(&poll_fd, 1, remaining > 50 ? 50 : remaining);
             if (ready < 0 && errno == EINTR) continue;
@@ -221,7 +238,10 @@ int serial_read(void *buffer, size_t size) {
             if (ready > 0) {
                 ssize_t count = read(fd, buffer, size);
                 if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-                return count == 0 ? -1 : (int)count; /* EOF is not a timeout. */
+                /* With VMIN=0 a UART can return no data without a hangup.
+                 * POLLHUP/POLLERR above still identify disconnection/error. */
+                if (count == 0) continue;
+                return (int)count;
             }
         }
         return 0;
@@ -262,7 +282,7 @@ int serial_read(void *buffer, size_t size) {
  * 
  * @return It returns the number of bytes written to the serial port, or -1 if there was an error during writing.
  */
-int serial_write(const void *buffer, size_t size) {
+static int serial_write_bytes(const void *buffer, size_t size) {
     if (commissioning_active() && commissioning_remaining_ms() <= 0) return -1;
     if (fd == -1) {
         return -1;
@@ -289,4 +309,36 @@ int serial_write(const void *buffer, size_t size) {
     }
 
     return (int)bytes_written;
+}
+
+int serial_write(const void *buffer, size_t size)
+{
+    if (!serial_tx_control_enabled() || !size) return serial_write_bytes(buffer, size);
+    if (fd < 0) return -1;
+    int sent = -1;
+    if (serial_tx_control_set(true)) {
+        sent = serial_write_bytes(buffer, size);
+        /* Queue-empty alone is insufficient: wait for the UART shift register.
+         * This ioctl is supported by the confirmed product UART. Unsupported
+         * drivers fail explicitly rather than truncating a frame silently. */
+        uint64_t end = get_timestamp_ns() + 60000000000ULL;
+        while (sent >= 0) {
+            int status = 0;
+            if ((commissioning_active() && commissioning_remaining_ms() <= 0) || get_timestamp_ns() >= end) { sent = -1; break; }
+            if (ioctl(fd, TIOCSERGETLSR, &status) < 0) {
+                if (errno == EINTR) continue;
+                sent = -1; break;
+            }
+            if (status & TIOCSER_TEMT) break;
+            /* A peripheral may reply within a fraction of a character time.
+             * Sleeping here can discard its first bytes while /RE is disabled.
+             * Keep this short TX drain actively polled; the deadlines above
+             * still bound cancellation and a stuck transmitter. */
+        }
+    }
+    /* Everything received while the local receiver is disabled is local noise,
+     * not a peripheral reply. Flush before enabling RX, never afterwards. */
+    if (tcflush(fd, TCIFLUSH) < 0) sent = -1;
+    if (!serial_tx_control_set(false)) sent = -1;
+    return sent;
 }

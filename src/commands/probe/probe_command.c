@@ -10,7 +10,7 @@ static int probe_handler(struct cli_context *ctx, int argc, char **argv)
 }
 static struct cli_command probe_cmd = {
     .name = "probe",
-    .help = "Read identification/capabilities, optionally authenticate an explicit key; never mutate device configuration",
+    .help = "Read identification/capabilities, optionally authenticate with --scbk or --scbk-d; never mutate device configuration",
     .handler = probe_handler
 };
 REGISTER_COMMAND(probe_cmd);

@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file info_run.c
  * @brief Implementation for executing the info command
@@ -39,93 +40,44 @@
  */
 int info_run(struct cli_context *ctx)
 {
-    uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    unsigned char replyCode;
-
+    uint8_t reply[MAX_SIZE_MSG_PACKET];
+    uint8_t code = 0;
+    int size = -1, status = 1;
+    int attempts = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
     if (!ctx->info_opts.port) {
-        printf("info: --port required\n");
+        cli_set_error("info: --port required");
         return 1;
-    }    
-
+    }
     if (!serial_open(ctx->info_opts.port, ctx->info_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error, arguments missing(port/baudrate)\n");
-        return -1;
+        cli_set_error("Serial port unavailable");
+        return 1;
     }
-
-    osdpPacketInit(0 /*indReader*/, CONTROL_PANEL);
-    
+    osdpPacketInit(0, CONTROL_PANEL);
     logger_console_init(ctx);
-
-    if(ctx->glob_options.log_file_name != NULL)
-    {
-        if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
-        }
+    if (ctx->glob_options.log_file_name && logger_file_init(ctx) != 0) {
+        cli_set_error("Failed to open log file");
+        goto cleanup;
     }
-
-    // if secure channel mode is requested, establishing a secure channel is required before sending any command
-    if(ctx->info_opts.scbk_d || ctx->info_opts.scbk_set) {
-        // if scbk is provided use it for the secure channel establishment process 
-        if(ctx->info_opts.scbk_set)
-            setNewScbk(ctx->info_opts.scbk);
-        setSecureChannelMode(0);
-        
-        if(!openSecureChannelSession2(0, ctx->info_opts.addr, ctx->glob_options.retries))
-            return 1;
+    if (ctx->info_opts.scbk_d || ctx->info_opts.scbk_set) {
+        if (ctx->info_opts.scbk_set) setNewScbk(ctx->info_opts.scbk);
+        if (!openSecureChannelSession2(0, ctx->info_opts.addr, attempts)) goto cleanup;
     }
-
-    do{
-        // send the ID command to retrieve the vendor code, model number, serial numberi and firmware version of the device
+    for (int i = 0; i < attempts; ++i) {
         Command_OSDP_ID(0, ctx->info_opts.addr);
-
-        int size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
-
-        if(replyCode == REPLY_PDID) 
-        {
-            // command executed successfully, skip to OSDP_CAP sending
-        }
-        else if(replyCode == REPLY_NAK)
-        {
-            ctx->glob_options.retries--; // decrement the retry count in the CLI context
-            continue; // retry sending the command
-        }
-        else 
-        {
-            ctx->glob_options.retries--; // decrement the retry count in the CLI context
-            continue; // retry sending the command
-        }
-
-        do{
-            // send the CAP command to retrieve the capabilities of the device
-            Command_OSDP_CAP(0, ctx->info_opts.addr);
-
-            size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
-
-            if(replyCode == REPLY_PDCAP) 
-            {
-                // command executed successfully, exit the retry loop
-                break;
-            }
-            else if(replyCode == REPLY_NAK)
-            {
-                ctx->glob_options.retries--; // decrement the retry count in the CLI context
-                continue; // retry sending the command
-            }
-            else 
-            {
-                ctx->glob_options.retries--; // decrement the retry count in the CLI context
-                continue; // retry sending the command
-            }
-        } while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the OSDP_CAP command if a NAK is received, and if retries not exhausted
-    } while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the command OSDP_ID if a NAK is received, and if retries not exhausted
-
-    if(ctx->glob_options.log_file_name != NULL)
-        logger_file_close();
-
+        size = getReply(0, &code, reply, sizeof(reply));
+        if (size == sizeof(osdp_PDID) && code == REPLY_PDID) break;
+    }
+    if (cli_reply_result(size, code, size == sizeof(osdp_PDID) && code == REPLY_PDID)) goto cleanup;
+    for (int i = 0; i < attempts; ++i) {
+        Command_OSDP_CAP(0, ctx->info_opts.addr);
+        size = getReply(0, &code, reply, sizeof(reply));
+        if (size >= 0 && size % 3 == 0 && code == REPLY_PDCAP) break;
+    }
+    status = cli_reply_result(size, code, size >= 0 && size % 3 == 0 && code == REPLY_PDCAP);
+cleanup:
+    if (ctx->glob_options.log_file_name) logger_file_close();
     serial_close();
-
-    return 0;   
+    return status;
 }
 
 

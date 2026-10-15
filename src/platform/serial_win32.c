@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <windows.h>
 
 #include "serial.h"
@@ -7,7 +8,8 @@
 #include "../util/utils.h"
 
 static HANDLE handle /*hSerial*/ = INVALID_HANDLE_VALUE;
-static bool diagnostics_enabled = true;
+static bool diagnostics_enabled = false;
+static int read_timeout_ms = 100;
 void serial_set_diagnostics(bool enabled) { diagnostics_enabled = enabled; }
 
 
@@ -91,6 +93,7 @@ static HANDLE configure_serial_port(const char * pszBaudRate, int32_t timeout)
  */
 bool serial_open(const char *pszPortCom, const char *pszBaudRate, int32_t timeout) 
 {
+    read_timeout_ms = timeout > 0 ? timeout : 100;
     char full_port_name[32];
 
     // Formats full port name by prepending the special prefix "\\.\" to the provided port name (pszPortCom). 
@@ -153,10 +156,14 @@ void serial_close()
 int serial_read(void *buffer, size_t size) 
 {
     if (commissioning_active()) {
+        int started_remaining = commissioning_remaining_ms();
         while (commissioning_remaining_ms() > 0) {
             COMMTIMEOUTS limits = {0};
             limits.ReadIntervalTimeout = 50;
             int remaining = commissioning_remaining_ms();
+            int reply_remaining = read_timeout_ms - (started_remaining - remaining);
+            if (reply_remaining <= 0) break;
+            if (remaining > reply_remaining) remaining = reply_remaining;
             limits.ReadTotalTimeoutConstant = remaining > 50 ? 50 : remaining;
             limits.WriteTotalTimeoutConstant = remaining > 50 ? 50 : remaining;
             if (!SetCommTimeouts(handle, &limits)) return -1;

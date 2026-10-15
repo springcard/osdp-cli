@@ -32,7 +32,7 @@ int text_handler(struct cli_context *ctx, int argc, char **argv)
 
     int ret = text_parse(argc, argv, &ctx->text_opts);
     if (ret != 0)
-        return ret;
+        return ret == 1 ? 0 : ret;
 
     return text_run(ctx);
     //return text_test(ctx);

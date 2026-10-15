@@ -24,6 +24,7 @@
 #include "../renderer/renderer.h"
 #include "../core/osdp_event.h"
 #include "../cli/global_options_parser.h" 
+#include "../platform/serial.h"
 
 
 void showOspdSC_parameter(FILE * outputStream, int32_t nbTrame);
@@ -39,8 +40,8 @@ void showOspdSC_parameter(FILE * outputStream, int32_t nbTrame);
  *   - verbose mode:
  *       Displays a decoded and formatted packet view.
  *
- *   - default mode:
- *       Displays a classic hexadecimal dump.
+ *   - explicit trace mode:
+ *       Displays a classic hexadecimal dump. Logging is disabled by default.
  *
  * The logger is registered as an OSDP event listener and is invoked for every transmitted or received frame.
  *
@@ -52,30 +53,31 @@ static void console_logger(const struct osdp_event *ev, void *user_data)
 {
     struct cli_context *ctx = user_data;
     static int32_t nbTrame = 0;
+    FILE *output = ctx->glob_options.json ? stderr : stdout;
 
     if(ctx->glob_options.quiet)
     {
-        render_frame(stdout, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
+        render_frame(output, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
         if(ctx->glob_options.sc_params)
-            showOspdSC_parameter(stdout, nbTrame++);
+            showOspdSC_parameter(output, nbTrame++);
     }
 
     else if(ctx->glob_options.verbose)
     {
-        render_packet(stdout, ev->payload, ev->payload_len, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
+        render_packet(output, ev->payload, ev->payload_len, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
         if(ctx->glob_options.sc_params)
-            showOspdSC_parameter(stdout, nbTrame++);
+            showOspdSC_parameter(output, nbTrame++);
     }
 
     else if(ctx->glob_options.json){
-        render_json(stdout, ev, ctx->glob_options.no_color);
+        render_json(output, ev, ctx->glob_options.no_color);
     }
 
     else
     {
-        render_hexdump(stdout, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
+        render_hexdump(output, ev->frame, ev->frame_len, ev->direction, ctx->glob_options.no_color);
         if(ctx->glob_options.sc_params)
-            showOspdSC_parameter(stdout, nbTrame++);
+            showOspdSC_parameter(output, nbTrame++);
     }
 }
 
@@ -89,5 +91,11 @@ static void console_logger(const struct osdp_event *ev, void *user_data)
  */
 void logger_console_init(void *user_data)
 {
+    struct cli_context *ctx = user_data;
+    serial_set_diagnostics(ctx->glob_options.trace || ctx->glob_options.verbose ||
+                           ctx->glob_options.quiet || ctx->glob_options.sc_params);
+    if (!ctx->glob_options.trace && !ctx->glob_options.verbose &&
+        !ctx->glob_options.quiet && !ctx->glob_options.sc_params)
+        return;
     osdp_register_listener(console_logger, user_data);
 }

@@ -58,9 +58,14 @@ void cli_build_command_tree(void);
 // This allows for easy registration of commands without needing to manually call the registration function in the main program. 
 #ifdef _MSC_VER
 #pragma section(".CRT$XCU", read)
+#if defined(__clang__)
+#define CLI_REGISTRY_USED __attribute__((used))
+#else
+#define CLI_REGISTRY_USED
+#endif
 #define REGISTER_COMMAND(cmd) \
     static void __register_##cmd(void); \
-    __declspec(allocate(".CRT$XCU")) static void (*__register_##cmd##_initializer)(void) = __register_##cmd; \
+    __declspec(allocate(".CRT$XCU")) static void (*__register_##cmd##_initializer)(void) CLI_REGISTRY_USED = __register_##cmd; \
     static void __register_##cmd(void) \
     { \
         cli_register_command(&cmd); \

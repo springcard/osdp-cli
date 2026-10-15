@@ -108,8 +108,9 @@ size_t buildMsg(uint8_t iLecteur, uint8_t addr, uint8_t msgCode, const void *dat
 	}
 
     size = buildMsgPacket(iLecteur, addr, ptrCmd, size);
-    if (msgCode == CMD_KEYSET || msgCode == CMD_CHLNG || msgCode == CMD_SCRYPT)
+    if (msgCode == CMD_KEYSET || msgCode == CMD_CHLNG || msgCode == CMD_SCRYPT) {
         secure_zero(&cmd, sizeof(cmd));
+    }
 
 	return size;
 }

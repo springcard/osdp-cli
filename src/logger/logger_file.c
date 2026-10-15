@@ -104,6 +104,8 @@ int logger_file_init(void *user_data)
 {
     struct cli_context *ctx = user_data;
 
+    if (!ctx->glob_options.log_file_name)
+        return 0;
     g_file = fopen(ctx->glob_options.log_file_name, "w");
     if (!g_file)
     {

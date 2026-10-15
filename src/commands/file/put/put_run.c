@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file put_run.c
  * @brief Implementation for executing the put subcommand
@@ -59,6 +60,8 @@ int put_run(struct cli_context *ctx)
     uint8_t replyCode;
     int size = 0;
     bool flagContinue = true;
+    int status = 1;
+    FILE *f = NULL;
     uint16_t ftFragmentRequested = DEFAULT_MSG_SIZE;// Payload message size
     uint8_t is_Retry = false; // Flag to indicate if the current FILETRANSFER command is a retry due to a NAK response
 
@@ -76,34 +79,34 @@ int put_run(struct cli_context *ctx)
 
 
     if (!ctx->put_opts.port) {
-        printf("put: --port required\n");
+        cli_diagnostic(stdout, "put: --port required\n");
         return 1;
     }
     
     if(ctx->put_opts.type == PUT_TYPE_NONE) {
-        printf("put: --type <config|firmware|blob> required\n");
+        cli_diagnostic(stdout, "put: --type <config|firmware|blob> required\n");
         return 1;
     }
 
     if(!ctx->put_opts.input_file) {
-        fprintf(stderr, "put: --in <path> required for file to transfer\n");
+        cli_diagnostic(stderr, "put: --in <path> required for file to transfer\n");
         return 1;
     }
 
+    logger_console_init(ctx);
     if (!serial_open(ctx->put_opts.port, ctx->put_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
+        cli_diagnostic(stdout, "Error opening communication port (port/speed)\n");
         return -1;
     }
 
     osdpPacketInit(0 /*indReader*/, CONTROL_PANEL);
 
-    logger_console_init(ctx);    
 
     if(ctx->glob_options.log_file_name != NULL)
     {
         if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
+            cli_diagnostic(stderr, "Failed to open log file\n");
+            goto cleanup;
         }
     }    
 
@@ -115,19 +118,26 @@ int put_run(struct cli_context *ctx)
         setSecureChannelMode(0);
         
         if(!openSecureChannelSession2(0, ctx->put_opts.addr, ctx->glob_options.retries))
-            return 1;
+            goto cleanup;
     }
 
-    FILE *f = fopen(ctx->put_opts.input_file, "rb");
+    f = fopen(ctx->put_opts.input_file, "rb");
     if (!f) {
-        fprintf(stderr, "Failed to open file: %s", ctx->put_opts.input_file);
-        return -1;
+        cli_diagnostic(stderr, "Failed to open file: %s\n", ctx->put_opts.input_file);
+        goto cleanup;
     }
     else {
         // Get the file size
-        fseek(f, 0, SEEK_END);
-        ftSize = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        if (fseek(f, 0, SEEK_END) != 0) {
+            cli_set_error("Failed to seek input file");
+            goto cleanup;
+        }
+        long length = ftell(f);
+        if (length < 0 || (unsigned long long)length > UINT32_MAX || fseek(f, 0, SEEK_SET) != 0) {
+            cli_set_error("Invalid input file size or seek failure");
+            goto cleanup;
+        }
+        ftSize = (uint32_t)length;
     }    
 
     do
@@ -135,14 +145,22 @@ int put_run(struct cli_context *ctx)
         // reads the file if the PD is OK and if it's not a retry
         if(ftDetailStatus == OK_TO_PROCEED && !is_Retry)
         {
-            ftFragmentSize = fread(ftData, 1, ftFragmentRequested, f);
+            if (ftFragmentRequested > sizeof(ftData) - 16) {
+                cli_set_error("Device requested an oversized file fragment");
+                goto cleanup;
+            }
+            ftFragmentSize = (uint16_t)fread(ftData, 1, ftFragmentRequested, f);
+            if (ferror(f) || (ftFragmentSize == 0 && ftOffset < ftSize)) {
+                cli_set_error("Failed to read input file");
+                goto cleanup;
+            }
         }
         
         Command_OSDP_FILETRANSFER(0, ctx->put_opts.addr, ftType, ftSize, ftOffset, ftFragmentSize, ftData);
 
         size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
 
-        if(replyCode == REPLY_FTSTAT)
+        if(size == sizeof(osdp_FTSTAT) && replyCode == REPLY_FTSTAT)
         {
             osdp_FTSTAT * replyMsg = (osdp_FTSTAT *)  replyPacket;
             ftDelay = (replyMsg->ftDelay[1] << 8) | replyMsg->ftDelay[0];
@@ -161,7 +179,7 @@ int put_run(struct cli_context *ctx)
                     }
                     ftOffset += ftFragmentSize;
                     if (ftOffset > ftSize) {
-                        fprintf(stderr, "Offset overflow\n");
+                        cli_diagnostic(stderr, "Offset overflow\n");
                         flagContinue = false;
                     }
 
@@ -173,16 +191,22 @@ int put_run(struct cli_context *ctx)
                     ftFragmentSize = 0;
                     break;
 
-                case FILE_DATA_UNACCEPTABLE:
                 case FILE_CONTENTS_PROCESSED:
                 case REBOOT_NOW:
+                    status = 0;
+                    flagContinue = false;
+                    break;
+                case FILE_DATA_UNACCEPTABLE:
                 case ABORT_FILE_TRANSFER:
                 case UNRECOGNIZED_FILE_CONTENTS:
+                    cli_set_error("Device rejected file transfer (status %d)", ftDetailStatus);
                     /* code */
                     flagContinue = false;
                     break;                    
                 
                 default:
+                    cli_set_error("Unexpected file transfer status (%d)", ftDetailStatus);
+                    flagContinue = false;
                     break;
             }
         }
@@ -190,12 +214,14 @@ int put_run(struct cli_context *ctx)
         {
             osdp_NAK * replyMsg = (osdp_NAK *)  replyPacket;
             is_Retry = true; // Set the retry flag to indicate that the next FILETRANSFER command will be a retry due to a NAK response
-            if(--ctx->glob_options.retries < 0)
+            if(--ctx->glob_options.retries <= 0) {
+                cli_reply_result(size, replyCode, 0);
                 flagContinue = false;
+            }
             else if(ctx->put_opts.scbk_d || ctx->put_opts.scbk_set){// if secure channel mode is requested, establishing a secure channel is required before sending any command
                 setSecureChannelMode(0);
                 if(!openSecureChannelSession2(0, ctx->put_opts.addr, ctx->glob_options.retries))
-                    return 1;
+                    goto cleanup;
             }
                 
         }
@@ -203,8 +229,10 @@ int put_run(struct cli_context *ctx)
         {
             printf("<-- receive unexpected reply code: %02x\n", replyCode);
             is_Retry = true; // Set the retry flag to indicate that the next FILETRANSFER command will be a retry due to an unexpected reply code
-            if(--ctx->glob_options.retries < 0)
+            if(--ctx->glob_options.retries <= 0) {
+                cli_reply_result(size, replyCode, 0);
                 flagContinue = false;
+            }
         }
 
         // Requested time delay in milliseconds before next FILETRANSFER message.
@@ -215,14 +243,15 @@ int put_run(struct cli_context *ctx)
 
     } while(flagContinue); 
 
-    fclose(f);
+cleanup:
+    if (f) fclose(f);
 
     if(ctx->glob_options.log_file_name != NULL)
         logger_file_close();    
 
     serial_close();
 
-    return 0;   
+    return status;
 }
 
 

@@ -1,3 +1,4 @@
+#include "../../../cli/command_result.h"
 /**
  * @file put_options_parser.c
  * @brief Implementation for parsing put subcommand options
@@ -17,6 +18,7 @@
 
 #include "put_options.h"
 #include "../../../cli/parser_engine.h"
+#include "../../../util/utils.h"
 
 
 // Reference array of PUT types for the put command options, 
@@ -51,13 +53,14 @@ int put_parse(int argc, char **argv, struct put_options *opts)
     
     opts->addr = 0;          // Initialize to the first available address.
     opts->baud = "9600";       // Initialize to normal baud rate to use if not specified by the user.    
-    opts->type = PUT_TYPE_NONE; // Initialize to an invalid type to check later if it was set
+    opts->type = PUT_TYPE_FIRMWARE; // Firmware is the normal file-put operation.
     opts->chunk = 1024;         // Default chunk size to 1024 bytes
 
     // Define the available command-line options for the put subcommand.
     // Each `struct cli_option` defines a specific command-line option.
     // The `cli_option` structure includes fields for the option name, type, value pointer, size (for hex options), presence indicator, enumeration values (for enum options), and help text needed for parsing and handling that option.
     // It's the reference options, like a grammar for the command line arguments of the put subcommand, that the parsing function will use to understand and process the user's input correctly.
+    const char *input_option = NULL;
     struct cli_option options[] = {
 
         { "--port",     CLI_OPT_STRING, &opts->port,                  0,            NULL,             NULL, "Serial port to use (e.g. COM3 or /dev/ttyUSB0)" },
@@ -65,8 +68,8 @@ int put_parse(int argc, char **argv, struct put_options *opts)
         { "--addr",     CLI_OPT_INT,    &opts->addr,                  0,            NULL,             NULL, "Device address for the OSDP device to query" },        
         { "--scbk-d",   CLI_OPT_FLAG,   &opts->scbk_d,                0,            NULL,             NULL, "Use default SCBK key for secure channel establishment" },        
         { "--scbk",     CLI_OPT_HEX,    &opts->scbk, sizeof(opts->scbk), &opts->scbk_set,             NULL, "Use this Base Key for Secure Channel if possible" },
-        { "--type",     CLI_OPT_ENUM,   &opts->type,                  0,            NULL,  put_type_values, "File type for operation to perform" },
-        { "--in",       CLI_OPT_STRING, &opts->input_file,            0,            NULL,             NULL, "Input file containing data to put" },
+        { "--type",     CLI_OPT_ENUM,   &opts->type,                  0,            NULL,  put_type_values, "File type, default firmware" },
+        { "--in",       CLI_OPT_STRING, &input_option,                0,            NULL,             NULL, "Input file (alternative to the positional path)" },
         { "--chunk",    CLI_OPT_INT,    &opts->chunk,                 0,            NULL,             NULL, "Size of each chunk of data to send" },
         { "--resume",   CLI_OPT_FLAG,   &opts->resume,                0,            NULL,             NULL, "Resume an interrupted operation" },
         { "--reboot",   CLI_OPT_FLAG,   &opts->reboot,                0,            NULL,             NULL, "Reboot the device after operation is completed" },
@@ -75,16 +78,53 @@ int put_parse(int argc, char **argv, struct put_options *opts)
     };
     
     // put command line options parsing
-    int ret = parse_command_line_options(argc, argv, options, sizeof(options) / sizeof(options[0])) ;
+    int ret = 0;
+    int position = 0;
+    while (position < argc) {
+        input_option = NULL;
+        ret = parse_command_line_options(argc - position, argv + position,
+                                        options, sizeof(options) / sizeof(options[0]));
+        if (ret < 0) break;
+        if (input_option) {
+            if (opts->input_file) {
+                cli_diagnostic(stderr, "put: specify one input file, either a positional path or --in\n");
+                ret = -3;
+                break;
+            }
+            opts->input_file = input_option;
+            opts->input_file_set = 1;
+        }
+        position += ret;
+        if (position < argc) {
+            if (opts->input_file) {
+                cli_diagnostic(stderr, "put: specify one input file, either a positional path or --in\n");
+                ret = -3;
+                break;
+            }
+            opts->input_file = argv[position++];
+            opts->input_file_set = 1;
+        }
+    }
 
     if (ret == -1) { // Help requested, handle help option case.
-        printf("\nUsage: cmd put [options]\n");
+        printf("\nUsage: osdp-cli file put <path> --port <port> [options]\n");
+        printf("       osdp-cli file put --in <path> --port <port> [options]\n");
         print_command_line_options(options, sizeof(options) / sizeof(options[0]));
+        secure_zero(opts->scbk, sizeof(opts->scbk));
+        opts->scbk_set = 0;
         return 1;
     }
     else if (ret < 0) { // Parsing format error, handle error case.
+        secure_zero(opts->scbk, sizeof(opts->scbk));
+        opts->scbk_set = 0;
         return ret;
+    }
+    if (!opts->port || !*opts->port || !opts->input_file || !*opts->input_file) {
+        cli_diagnostic(stderr, "put: require --port and an input file (positional path or --in)\n");
+        secure_zero(opts->scbk, sizeof(opts->scbk));
+        opts->scbk_set = 0;
+        return -3;
     }
     
     return 0;
-}    
+}

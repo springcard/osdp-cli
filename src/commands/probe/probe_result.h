@@ -17,6 +17,8 @@ struct probe_result {
     bool has_id;
     bool has_capabilities;
     bool authenticated;
+    bool responded;
+    bool identification_refused;
     uint8_t id[REPLY_PDID_DATA_LEN];
     uint8_t capabilities[MAX_SIZE_MSG_PACKET];
     size_t capabilities_size;

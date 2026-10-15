@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,7 @@ bool commissioning_parse(int argc, char **argv, struct commissioning_request *re
 {
     memset(request, 0, sizeof(*request));
     request->device.addr = -1;
+    request->tx_control = -1;
     if (argc >= 2) {
         if (strcmp(argv[1], "authenticate") == 0) request->operation = COMMISSIONING_AUTHENTICATE;
         else if (strcmp(argv[1], "set-key") == 0) request->operation = COMMISSIONING_SET_KEY;
@@ -63,33 +65,44 @@ bool commissioning_parse(int argc, char **argv, struct commissioning_request *re
     }
     if (argc < 2 || (strcmp(argv[0], "--unattended") && strcmp(argv[0], "-u"))) return false;
     unsigned seen = 0;
-    for (int i = 2; i < argc; i += 2) {
-        if (i + 1 >= argc) return false;
-        const char *name = argv[i], *value = argv[i+1];
+    for (int i = 2; i < argc;) {
+        const char *name = argv[i++];
         unsigned bit = 0;
-        if (!strcmp(name, "--port")) {
-            bit = 1; if (!*value || strlen(value) > 256) return false;
-            request->device.port = value;
-        } else if (!strcmp(name, "--baud")) {
-            int baud; bit = 2;
-            if (!parse_integer(value, 1200, 921600, &baud)) return false;
-            request->device.baud = value;
-        } else if (!strcmp(name, "--addr")) {
-            bit = 4; if (!parse_integer(value, 0, 126, &request->device.addr)) return false;
-        } else if (!strcmp(name, "--timeout")) {
-            bit = 8; if (!parse_integer(value, 1, 60000, &request->timeout_ms)) return false;
-        } else if (!strcmp(name, "--scbk")) {
-            bit = 16; if (!parse_key(value, request->device.key)) return false;
-            request->device.key_set = 1;
-        } else if (!strcmp(name, "--set-key")) {
-            bit = 32; if (!parse_key(value, request->target_key)) return false;
-        } else return false;
+        if (!strcmp(name, "--scbk-d")) {
+            bit = 16;
+            request->device.scbk_d = 1;
+        } else {
+            if (i >= argc) return false;
+            const char *value = argv[i++];
+            if (!strcmp(name, "--port")) {
+                bit = 1; if (!*value || strlen(value) > 256) return false;
+                request->device.port = value;
+            } else if (!strcmp(name, "--baud") || !strcmp(name, "--baudrate")) {
+                int baud; bit = 2;
+                if (!parse_integer(value, 1200, 921600, &baud)) return false;
+                request->device.baud = value;
+            } else if (!strcmp(name, "--addr")) {
+                bit = 4; if (!parse_integer(value, 0, 126, &request->device.addr)) return false;
+            } else if (!strcmp(name, "--timeout")) {
+                bit = 8; if (!parse_integer(value, 1, 60000, &request->timeout_ms)) return false;
+            } else if (!strcmp(name, "--scbk")) {
+                bit = 16; if (!parse_key(value, request->device.key)) return false;
+                request->device.key_set = 1;
+            } else if (!strcmp(name, "--set-key")) {
+                bit = 32; if (!parse_key(value, request->target_key)) return false;
+            } else if (!strcmp(name, "--tx-control")) {
+                bit = 64; if (!parse_integer(value, 0, 65535, &request->tx_control)) return false;
+            } else return false;
+        }
         if (seen & bit) return false;
         seen |= bit;
     }
     unsigned expected = request->operation == COMMISSIONING_PROBE ? 15 :
                         request->operation == COMMISSIONING_AUTHENTICATE ? 31 : 63;
-    return seen == expected;
+#ifdef _WIN32
+    if (seen & 64u) return false;
+#endif
+    return (seen & ~64u) == expected;
 }
 
 static enum commissioning_code probe_code(enum probe_status status) {
@@ -104,12 +117,12 @@ static enum commissioning_code probe_code(enum probe_status status) {
     }
 }
 static enum commissioning_code authenticate_open(struct commissioning_request *request,
-                                                const uint8_t *key, struct probe_result *device)
+                                                const uint8_t *key, bool transport, struct probe_result *device)
 {
     if (commissioning_cancelled()) return COMM_CANCELLED;
     if (commissioning_remaining_ms() <= 0) return COMM_NO_RESPONSE;
     clearSecureChannelKeys();
-    setNewScbk((uint8_t *)key);
+    if (!transport) setNewScbk((uint8_t *)key);
     osdpPacketInit(0, CONTROL_PANEL);
     if (!serial_open(request->device.port, request->device.baud, commissioning_remaining_ms()))
         return COMM_PORT_UNAVAILABLE;
@@ -140,6 +153,7 @@ void commissioning_execute(struct commissioning_request *request, struct commiss
     memset(result, 0, sizeof(*result));
     result->code = COMM_INVALID_REQUEST;
     bool mutation = false;
+    if (!serial_set_tx_control(request->tx_control)) return;
     serial_set_diagnostics(false);
     commissioning_begin(request->timeout_ms);
     if (request->operation == COMMISSIONING_PROBE) {
@@ -149,7 +163,7 @@ void commissioning_execute(struct commissioning_request *request, struct commiss
     }
     if (request->operation == COMMISSIONING_SET_KEY) {
         /* Repeated calls first prove the target key and avoid another write. */
-        result->code = authenticate_open(request, request->target_key, &result->device);
+        result->code = authenticate_open(request, request->target_key, false, &result->device);
         if (result->code == COMM_OK) {
             result->authenticated = true;
             result->verified_target_key = true;
@@ -158,7 +172,7 @@ void commissioning_execute(struct commissioning_request *request, struct commiss
         serial_close(); clearSecureChannelKeys();
         if (result->code != COMM_AUTHENTICATION_FAILED) goto cleanup;
     }
-    result->code = authenticate_open(request, request->device.key, &result->device);
+    result->code = authenticate_open(request, request->device.key, request->device.scbk_d != 0, &result->device);
     if (result->code != COMM_OK) goto cleanup;
     result->authenticated = true;
     if (request->operation == COMMISSIONING_AUTHENTICATE) goto cleanup;
@@ -189,7 +203,7 @@ void commissioning_execute(struct commissioning_request *request, struct commiss
     secure_zero(reply, sizeof(reply));
     if (size != 0 || code != REPLY_ACK) goto cleanup;
     serial_close(); clearSecureChannelKeys();
-    enum commissioning_code verification = authenticate_open(request, request->target_key, &result->device);
+    enum commissioning_code verification = authenticate_open(request, request->target_key, false, &result->device);
     if (verification == COMM_OK) {
         result->code = COMM_OK; result->unknown = false;
         result->verified_target_key = true;
@@ -224,7 +238,7 @@ static int emit_result(const struct commissioning_request *request, const struct
     if (result->device.has_id) {
         const uint8_t *id = result->device.id;
         printf(",\"manufacturer\":\"%02X%02X%02X\",\"model\":%u,\"firmware\":\"%u.%u.%u\"",
-               id[0], id[1], id[2], id[3], id[9], id[10], id[11]);
+               id[2], id[1], id[0], id[3], id[9], id[10], id[11]);
     }
     if (result->device.has_capabilities) {
         printf(",\"capabilities\":[");
@@ -253,7 +267,8 @@ int commissioning_main(int argc, char **argv)
         secure_zero(request.device.key, sizeof(request.device.key));
         secure_zero(request.target_key, sizeof(request.target_key));
     }
-    if (result.code != COMM_OK) fprintf(stderr, "osdp commissioning: %s\n", code_name(result.code));
+    if (result.code != COMM_OK) cli_diagnostic(stderr, "osdp commissioning: %s\n", code_name(result.code));
+    if (result.code != COMM_OK) cli_error_code(code_name(result.code));
     int exit_code = emit_result(&request, &result);
     secure_zero(&request, sizeof(request)); secure_zero(&result, sizeof(result));
     return exit_code;

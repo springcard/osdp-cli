@@ -32,7 +32,7 @@ int buzzer_handler(struct cli_context *ctx, int argc, char **argv)
 
     int ret = buzzer_parse(argc, argv, &ctx->buzzer_opts);
     if (ret != 0)
-        return ret;
+        return ret == 1 ? 0 : ret;
 
     return buzzer_run(ctx);
     //return buzzer_test(ctx);

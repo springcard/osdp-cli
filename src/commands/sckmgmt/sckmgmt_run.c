@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 #include <stdio.h>
 #include "sckmgmt_options.h"
 #include "../../cli/global_options_parser.h"
@@ -25,14 +26,14 @@ int sckmgmt_run(struct cli_context *ctx)
         (!opts->scbk_set && !opts->scbk_d) ||
         (opts->scbk_set && opts->scbk_d) || opts->scsk_set ||
         opts->addr < 0 || opts->addr > 126 || ctx->glob_options.retries < 0) {
-        fprintf(stderr, "sckmgmt: require --port, --set-key, one of --scbk/--scbk-d and address 0..126; --scsk unsupported\n");
+        cli_diagnostic(stderr, "sckmgmt: require --port, --set-key, one of --scbk/--scbk-d and address 0..126; --scsk unsupported\n");
         goto cleanup;
     }
 
     /* No frame/payload/session-key logging during key management. */
     clearSecureChannelKeys();
     if (!serial_open(opts->port, opts->baud, ctx->glob_options.timeout)) {
-        fprintf(stderr, "sckmgmt: serial port unavailable\n");
+        cli_diagnostic(stderr, "sckmgmt: serial port unavailable\n");
         goto cleanup;
     }
     port_open = true;
@@ -40,7 +41,7 @@ int sckmgmt_run(struct cli_context *ctx)
     setPlainTextMode(0);
     if (opts->scbk_set) setNewScbk(opts->scbk);
     if (!openSecureChannelSession2(0, opts->addr, ctx->glob_options.retries)) {
-        fprintf(stderr, "sckmgmt: current-key session failed; no KEYSET sent\n");
+        cli_diagnostic(stderr, "sckmgmt: current-key session failed; no KEYSET sent\n");
         goto cleanup;
     }
 
@@ -49,16 +50,16 @@ int sckmgmt_run(struct cli_context *ctx)
     Command_OSDP_KEYSET(0, opts->addr, 0x01, 16, opts->new_scbk);
     int size = getReply(0, &code, reply, sizeof(reply));
     if (size < 0) {
-        fprintf(stderr, "sckmgmt: outcome unknown after KEYSET; probe target key before retrying\n");
+        cli_diagnostic(stderr, "sckmgmt: outcome unknown after KEYSET; probe target key before retrying\n");
         goto cleanup;
     }
     if (code == REPLY_NAK && size == sizeof(osdp_NAK)) {
         result = 1;
-        fprintf(stderr, "sckmgmt: KEYSET refused\n");
+        cli_diagnostic(stderr, "sckmgmt: KEYSET refused\n");
         goto cleanup;
     }
     if (code != REPLY_ACK || size != 0) {
-        fprintf(stderr, "sckmgmt: invalid KEYSET reply; outcome unknown\n");
+        cli_diagnostic(stderr, "sckmgmt: invalid KEYSET reply; outcome unknown\n");
         goto cleanup;
     }
 
@@ -69,13 +70,13 @@ int sckmgmt_run(struct cli_context *ctx)
     osdpPacketInit(0, CONTROL_PANEL);
     setPlainTextMode(0);
     if (!serial_open(opts->port, opts->baud, ctx->glob_options.timeout)) {
-        fprintf(stderr, "sckmgmt: verification port unavailable; outcome unknown\n");
+        cli_diagnostic(stderr, "sckmgmt: verification port unavailable; outcome unknown\n");
         goto cleanup;
     }
     port_open = true;
     /* ACK alone is never installation proof; verify even without --verify. */
     if (!openSecureChannelSession2(0, opts->addr, ctx->glob_options.retries)) {
-        fprintf(stderr, "sckmgmt: target-key verification failed; outcome unknown\n");
+        cli_diagnostic(stderr, "sckmgmt: target-key verification failed; outcome unknown\n");
         goto cleanup;
     }
     result = 0;

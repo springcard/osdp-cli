@@ -1,3 +1,4 @@
+#include "../../cli/command_result.h"
 /**
  * @file config_run.c
  * @brief Implementation for executing the config command
@@ -40,128 +41,72 @@
  */
 int config_run(struct cli_context *ctx)
 {
-    uint8_t replyPacket[MAX_SIZE_MSG_PACKET];
-    uint8_t replyCode;
-    int size = 0;
-
-    if (!ctx->config_opts.port) {
-        printf("config: --port required\n");
+    uint8_t reply[MAX_SIZE_MSG_PACKET] = {0};
+    uint8_t code = 0;
+    int size = -1, status = 1;
+    bool opened = false;
+    int attempts = ctx->glob_options.retries > 0 ? ctx->glob_options.retries : 1;
+    struct config_options *opts = &ctx->config_opts;
+    if (!opts->port) {
+        cli_set_error("config: --port required");
         return 1;
     }
-
-    if (!serial_open(ctx->config_opts.port, ctx->config_opts.baud, ctx->glob_options.timeout)) {
-        printf("Error opening communication port (port/speed)\n");
-        return -1;
+    if (!serial_open(opts->port, opts->baud, ctx->glob_options.timeout)) {
+        cli_set_error("Serial port unavailable");
+        return 1;
     }
-
-    osdpPacketInit(0 /*indReader*/, CONTROL_PANEL);
-
+    opened = true;
+    osdpPacketInit(0, CONTROL_PANEL);
     logger_console_init(ctx);
-    
-    if(ctx->glob_options.log_file_name != NULL)
-    {
-        if (logger_file_init(ctx) != 0) {
-            fprintf(stderr, "Failed to open log file\n");
-            return 1;
-        }
-     }
-
-    // if secure channel mode is requested, establishing a secure channel is required before sending any command
-    if(ctx->config_opts.scbk_d || ctx->config_opts.scbk_set) {
-        // if scbk is provided set and use it for the secure channel establishment process 
-        if(ctx->config_opts.scbk_set)
-            setNewScbk(ctx->config_opts.scbk);
-        setSecureChannelMode(0);
-        
-        if(!openSecureChannelSession2(0, ctx->config_opts.addr, ctx->glob_options.retries))
-            return 1;
+    if (ctx->glob_options.log_file_name && logger_file_init(ctx) != 0) {
+        cli_set_error("Failed to open log file");
+        goto cleanup;
     }
-
-    if(!ctx->config_opts.new_addr_set) {
-        ctx->config_opts.new_addr = ctx->config_opts.addr;
+    if (opts->scbk_d || opts->scbk_set) {
+        if (opts->scbk_set) setNewScbk(opts->scbk);
+        if (!openSecureChannelSession2(0, opts->addr, attempts)) goto cleanup;
     }
-
-    if(!ctx->config_opts.new_baud_set) {
-        ctx->config_opts.new_baud = (unsigned int) strtoul(ctx->config_opts.baud, NULL, 10);
+    if (!opts->new_addr_set) opts->new_addr = opts->addr;
+    if (!opts->new_baud_set) opts->new_baud = (unsigned int)strtoul(opts->baud, NULL, 10);
+    for (int i = 0; i < attempts; ++i) {
+        Command_OSDP_COMSET(0, opts->addr, opts->new_addr, opts->new_baud);
+        size = getReply(0, &code, reply, sizeof(reply));
+        if (size == sizeof(osdp_COM) && code == REPLY_COM) break;
+        /* A write may already have taken effect if its reply was lost. */
+        if (size < 0 || code != REPLY_NAK) break;
     }
-
-    do{
-        // send the COMSET command to configure the device
-        Command_OSDP_COMSET(0, ctx->config_opts.addr,  ctx->config_opts.new_addr, ctx->config_opts.new_baud);  
-        size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
-
-        if(replyCode == REPLY_COM) 
-        {
-            osdp_COM * replyMsg = (osdp_COM *)  replyPacket;
-
-            if(ctx->config_opts.new_addr == replyMsg->addr && ctx->config_opts.new_baud == replyMsg->baudrate) 
-            {
-                if(ctx->config_opts.reconnect) 
-                {
-                    serial_close();
-                    delay_ms(1000); // wait for the device to apply the new configuration and be ready for a new connection
-
-                    char strBaudrate[7]; // max 6 digits for baud rates up to 921600 plus null terminator
-                    snprintf(strBaudrate, sizeof(strBaudrate), "%u", replyMsg->baudrate);
-
-                    if (!serial_open(ctx->config_opts.port, strBaudrate, ctx->glob_options.timeout)) 
-                    {
-                        return -1;
-                    }
-
-                    // if secure channel mode is requested, establishing a secure channel is required before sending any command
-                    if(ctx->config_opts.scbk_d || ctx->config_opts.scbk_set) 
-                    {
-
-                        setSecureChannelMode(0);
-
-                        if(!openSecureChannelSession2(0, ctx->config_opts.addr, ctx->glob_options.retries))
-                            return 1;
-                    }
-                    
-                    do{
-                        // send the ID command to retrieve the vendor code, model number, serial numberi and firmware version of the device
-                        Command_OSDP_ID(0, ctx->config_opts.addr);
-
-                        size = getReply(0, &replyCode, replyPacket, sizeof(replyPacket));
-
-                        if(replyCode == REPLY_PDID) 
-                        {
-                            break; // command executed successfully, exit the retry loop
-                        }  
-                        else if(replyCode == REPLY_NAK)
-                        {
-                            ctx->glob_options.retries--; // decrement the retry count in the CLI context
-                        }
-                        else 
-                        {
-                            ctx->glob_options.retries--; // decrement the retry count in the CLI context
-                        }
-                    }while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the command if a NAK is received, and if retries are still available              
-                }
-            }
-            else 
-            {
-                printf("Configuration not applied \n");
-            }
-
+    if (cli_reply_result(size, code, size == sizeof(osdp_COM) && code == REPLY_COM)) goto cleanup;
+    osdp_COM *applied = (osdp_COM *)reply;
+    if (applied->addr != opts->new_addr || applied->baudrate != opts->new_baud) {
+        cli_set_error("Device did not apply the requested configuration");
+        goto cleanup;
+    }
+    if (opts->reconnect) {
+        char baud[16];
+        snprintf(baud, sizeof(baud), "%u", opts->new_baud);
+        serial_close();
+        opened = false;
+        delay_ms(1000);
+        if (!serial_open(opts->port, baud, ctx->glob_options.timeout)) {
+            cli_set_error("Failed to reopen serial port after configuration change");
+            goto cleanup;
         }
-        else if(replyCode == REPLY_NAK)
-        {
-            ctx->glob_options.retries--; // decrement the retry count in the CLI context
+        opened = true;
+        osdpPacketInit(0, CONTROL_PANEL);
+        if ((opts->scbk_d || opts->scbk_set) &&
+            !openSecureChannelSession2(0, opts->new_addr, attempts)) goto cleanup;
+        for (int i = 0; i < attempts; ++i) {
+            Command_OSDP_ID(0, opts->new_addr);
+            size = getReply(0, &code, reply, sizeof(reply));
+            if (size == sizeof(osdp_PDID) && code == REPLY_PDID) break;
         }
-        else
-        {
-            ctx->glob_options.retries--; // decrement the retry count in the CLI context
-        }
-    }while(replyCode == REPLY_NAK && ctx->glob_options.retries); // retry sending the command if a NAK is received, and if retries are still available
-
-    if(ctx->glob_options.log_file_name != NULL)
-        logger_file_close();
-
-    serial_close();
-
-    return 0;   
+        if (cli_reply_result(size, code, size == sizeof(osdp_PDID) && code == REPLY_PDID)) goto cleanup;
+    }
+    status = 0;
+cleanup:
+    if (ctx->glob_options.log_file_name) logger_file_close();
+    if (opened) serial_close();
+    return status;
 }
 
 

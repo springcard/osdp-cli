@@ -30,7 +30,7 @@ int config_handler(struct cli_context *ctx, int argc, char **argv)
 
     int ret = config_parse(argc, argv, &ctx->config_opts);
     if (ret != 0)
-        return ret;
+        return ret == 1 ? 0 : ret;
 
     return config_run(ctx);
     //return config_test(ctx);
